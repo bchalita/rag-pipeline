@@ -3,15 +3,485 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RAG Pipeline — Chat</title>
+    <title>RAG Pipeline — Document Q&A</title>
     <style>
-        body { font-family: system-ui; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
-        h1 { color: #e94560; text-align: center; }
-        p { text-align: center; color: #888; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            background: #16162a;
+            padding: 16px 24px;
+            border-bottom: 1px solid #2a2a4a;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 20px;
+            color: #e94560;
+            font-weight: 600;
+        }
+        .header .status {
+            font-size: 13px;
+            color: #666;
+        }
+
+        /* Main layout */
+        .main {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Sidebar — file upload + list */
+        .sidebar {
+            width: 280px;
+            background: #12122a;
+            border-right: 1px solid #2a2a4a;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+        }
+        .sidebar h2 {
+            font-size: 14px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        /* Upload zone */
+        .upload-zone {
+            border: 2px dashed #3a3a5a;
+            border-radius: 8px;
+            padding: 24px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            margin-bottom: 16px;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #e94560;
+            background: rgba(233, 69, 96, 0.05);
+        }
+        .upload-zone p {
+            font-size: 13px;
+            color: #888;
+            margin-top: 8px;
+        }
+        .upload-zone .icon { font-size: 28px; }
+
+        /* File list */
+        .file-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: #1a1a35;
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .file-item .name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .file-item .meta {
+            color: #666;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+        .file-item .delete-btn {
+            background: none;
+            border: none;
+            color: #e94560;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 6px;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        .file-item .delete-btn:hover { opacity: 1; }
+
+        /* Chat area */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            max-width: 85%;
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message.user {
+            margin-left: auto;
+        }
+        .message .bubble {
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .message.user .bubble {
+            background: #e94560;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant .bubble {
+            background: #1e1e3a;
+            border: 1px solid #2a2a4a;
+            border-bottom-left-radius: 4px;
+        }
+        .message .label {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .message.user .label { text-align: right; }
+
+        /* Citations */
+        .citations {
+            margin-top: 10px;
+            border-top: 1px solid #2a2a4a;
+            padding-top: 8px;
+        }
+        .citations summary {
+            font-size: 12px;
+            color: #e94560;
+            cursor: pointer;
+            user-select: none;
+        }
+        .citation-item {
+            font-size: 12px;
+            color: #888;
+            padding: 6px 0;
+            border-bottom: 1px solid #1a1a30;
+        }
+        .citation-item .file { color: #e94560; }
+        .citation-item .excerpt {
+            display: block;
+            margin-top: 4px;
+            color: #666;
+            font-style: italic;
+        }
+
+        /* Query info badge */
+        .query-info {
+            font-size: 11px;
+            color: #555;
+            margin-top: 6px;
+        }
+
+        /* Input area */
+        .input-area {
+            padding: 16px 24px;
+            background: #16162a;
+            border-top: 1px solid #2a2a4a;
+            display: flex;
+            gap: 12px;
+        }
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            background: #1e1e3a;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .input-area input:focus { border-color: #e94560; }
+        .input-area input::placeholder { color: #555; }
+
+        .input-area button {
+            padding: 12px 24px;
+            background: #e94560;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .input-area button:hover { background: #d63d56; }
+        .input-area button:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+
+        /* Loading spinner */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #2a2a4a;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Upload progress */
+        .upload-progress {
+            font-size: 12px;
+            color: #e94560;
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #444;
+        }
+        .empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+        .empty-state p { font-size: 14px; line-height: 1.6; }
     </style>
 </head>
 <body>
-    <h1>RAG Pipeline</h1>
-    <p>Chat UI coming soon — ingestion endpoints are live.</p>
+    <div class="header">
+        <h1>RAG Pipeline</h1>
+        <span class="status" id="status">No documents loaded</span>
+    </div>
+
+    <div class="main">
+        <!-- Sidebar: Upload + Files -->
+        <div class="sidebar">
+            <h2>Documents</h2>
+            <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+                <div class="icon">+</div>
+                <p>Drop PDFs here or click to upload</p>
+            </div>
+            <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
+            <div class="upload-progress" id="uploadProgress"></div>
+            <div class="file-list" id="fileList"></div>
+        </div>
+
+        <!-- Chat -->
+        <div class="chat-area">
+            <div class="messages" id="messages">
+                <div class="empty-state" id="emptyState">
+                    <div class="icon">&#128196;</div>
+                    <p>Upload PDF documents, then ask questions about them.<br>
+                    I'll search through your documents and cite my sources.</p>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <input type="text" id="queryInput" placeholder="Ask a question about your documents..."
+                       onkeydown="if(event.key==='Enter') sendQuery()">
+                <button id="sendBtn" onclick="sendQuery()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';  // Same origin
+
+        // ── File Upload ──
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const uploadProgress = document.getElementById('uploadProgress');
+
+        // Drag & drop
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+        uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+        async function handleFiles(files) {
+            if (!files.length) return;
+
+            const formData = new FormData();
+            for (const file of files) {
+                if (!file.name.toLowerCase().endsWith('.pdf')) {
+                    alert(`'${file.name}' is not a PDF file.`);
+                    continue;
+                }
+                formData.append('files', file);
+            }
+
+            uploadProgress.textContent = 'Uploading and processing...';
+            try {
+                const resp = await fetch(`${API}/ingest`, { method: 'POST', body: formData });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Upload failed');
+                uploadProgress.textContent = `${data.message}`;
+                setTimeout(() => uploadProgress.textContent = '', 3000);
+                refreshFileList();
+            } catch (err) {
+                uploadProgress.textContent = `Error: ${err.message}`;
+            }
+            fileInput.value = '';
+        }
+
+        // ── File List ──
+        async function refreshFileList() {
+            const resp = await fetch(`${API}/files`);
+            const files = await resp.json();
+
+            const fileList = document.getElementById('fileList');
+            const status = document.getElementById('status');
+
+            if (files.length === 0) {
+                fileList.innerHTML = '<p style="color:#555;font-size:12px;text-align:center">No files uploaded</p>';
+                status.textContent = 'No documents loaded';
+            } else {
+                const totalChunks = files.reduce((s, f) => s + f.num_chunks, 0);
+                status.textContent = `${files.length} doc(s), ${totalChunks} chunks`;
+                fileList.innerHTML = files.map(f => `
+                    <div class="file-item">
+                        <span class="name" title="${f.filename}">${f.filename}</span>
+                        <span class="meta">${f.num_pages}p / ${f.num_chunks}c</span>
+                        <button class="delete-btn" onclick="deleteFile('${f.filename}')" title="Remove">x</button>
+                    </div>
+                `).join('');
+            }
+        }
+
+        async function deleteFile(filename) {
+            if (!confirm(`Remove '${filename}' from the knowledge base?`)) return;
+            await fetch(`${API}/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+            refreshFileList();
+        }
+
+        // ── Chat ──
+        const messagesDiv = document.getElementById('messages');
+        const queryInput = document.getElementById('queryInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function addMessage(role, content, extra = '') {
+            document.getElementById('emptyState')?.remove();
+
+            const div = document.createElement('div');
+            div.className = `message ${role}`;
+            div.innerHTML = `
+                <div class="label">${role === 'user' ? 'You' : 'Assistant'}</div>
+                <div class="bubble">${formatContent(content)}${extra}</div>
+            `;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return div;
+        }
+
+        function formatContent(text) {
+            // Basic markdown-like formatting
+            return text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n- /g, '<br>• ')
+                .replace(/\n  - /g, '<br>&nbsp;&nbsp;• ')
+                .replace(/\n/g, '<br>');
+        }
+
+        function addLoading() {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+            div.id = 'loadingMsg';
+            div.innerHTML = `
+                <div class="label">Assistant</div>
+                <div class="bubble"><span class="loading"></span> Searching documents...</div>
+            `;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function removeLoading() {
+            document.getElementById('loadingMsg')?.remove();
+        }
+
+        async function sendQuery() {
+            const question = queryInput.value.trim();
+            if (!question) return;
+
+            queryInput.value = '';
+            sendBtn.disabled = true;
+
+            addMessage('user', question);
+            addLoading();
+
+            try {
+                const resp = await fetch(`${API}/query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Query failed');
+
+                removeLoading();
+
+                // Build citations HTML
+                let extra = '';
+                if (data.citations && data.citations.length > 0) {
+                    extra += '<div class="citations"><details><summary>' +
+                        `${data.citations.length} source(s) cited</summary>`;
+                    for (const c of data.citations) {
+                        extra += `<div class="citation-item">
+                            <span class="file">${c.source_file}</span>, p.${c.page_number}
+                            (relevance: ${(c.relevance_score * 100).toFixed(1)}%)
+                            <span class="excerpt">${c.text_excerpt}</span>
+                        </div>`;
+                    }
+                    extra += '</details></div>';
+                }
+
+                // Add query info if rewritten
+                if (data.query_rewritten && data.intent === 'search') {
+                    extra += `<div class="query-info">Search query: "${data.query_rewritten}"</div>`;
+                }
+
+                addMessage('assistant', data.answer, extra);
+
+            } catch (err) {
+                removeLoading();
+                addMessage('assistant', `Error: ${err.message}`);
+            }
+
+            sendBtn.disabled = false;
+            queryInput.focus();
+        }
+
+        // Initial file list load
+        refreshFileList();
+    </script>
 </body>
 </html>
