@@ -16,7 +16,7 @@ from app.generation import (
     _detect_query_type,
     _extract_citations,
     generate_answer,
-    SIMILARITY_THRESHOLD,
+    RELEVANCE_THRESHOLD,
 )
 
 
@@ -73,7 +73,7 @@ def test_extract_citations():
 def test_insufficient_evidence():
     """Low-similarity chunks should trigger insufficient evidence response."""
     chunks = [
-        (make_chunk("Unrelated text about cooking recipes"), SIMILARITY_THRESHOLD - 0.1),
+        (make_chunk("Unrelated text about cooking recipes"), RELEVANCE_THRESHOLD - 0.1),
     ]
     answer, citations = generate_answer("What is the company's revenue?", chunks)
     print(f"  Answer: '{answer}'")

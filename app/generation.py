@@ -11,8 +11,10 @@ Pipeline:
 from app.models import Chunk, Citation
 from app.query import _call_mistral
 
-# Similarity threshold — if best chunk scores below this, we don't have enough evidence
-SIMILARITY_THRESHOLD = 0.3
+# Relevance threshold — applied to RRF scores (typical range: 0.005–0.035)
+# A chunk appearing in top-5 of both semantic + keyword lists scores ~0.03
+# A chunk in only one list scores ~0.016. Threshold of 0.005 filters truly irrelevant results.
+RELEVANCE_THRESHOLD = 0.005
 
 
 def _format_context(chunks_with_scores: list[tuple[Chunk, float]]) -> str:
@@ -151,7 +153,7 @@ def generate_answer(
         return "I don't have any documents to search through. Please upload some PDFs first.", []
 
     best_score = max(score for _, score in chunks_with_scores)
-    if best_score < SIMILARITY_THRESHOLD:
+    if best_score < RELEVANCE_THRESHOLD:
         return (
             "I couldn't find sufficient evidence in the uploaded documents to answer "
             "this question. The available content doesn't seem to cover this topic.",

@@ -13,22 +13,35 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from app.models import IngestResponse, FileInfo
+from app.models import IngestResponse, QueryRequest, QueryResponse, FileInfo, Citation
 from app.ingestion import process_pdf
 from app.embeddings import VectorStore, embed_texts
+from app.search import BM25Index, hybrid_search
+from app.query import detect_intent, rewrite_query, get_chitchat_response, get_refusal_response
+from app.generation import generate_answer
 
 load_dotenv()
 
 app = FastAPI(title="RAG Pipeline", version="0.1.0")
 
+# CORS — allow the frontend to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Global vector store — persists in memory for the lifetime of the server
+# Global stores — persist in memory for the lifetime of the server
 vector_store = VectorStore()
+bm25_index = BM25Index()
 
 # Track ingested files and their metadata
 ingested_files: dict[str, FileInfo] = {}
@@ -38,7 +51,7 @@ ingested_files: dict[str, FileInfo] = {}
 async def ingest_pdfs(files: list[UploadFile] = File(...)):
     """Upload one or more PDF files for ingestion into the knowledge base.
 
-    Pipeline: Upload → Extract text → Chunk → Embed → Store
+    Pipeline: Upload → Extract text → Chunk → Embed → Store in both vector + BM25 index
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
@@ -47,7 +60,6 @@ async def ingest_pdfs(files: list[UploadFile] = File(...)):
     total_chunks = 0
 
     for file in files:
-        # Validate file type
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(
                 status_code=400,
@@ -67,12 +79,13 @@ async def ingest_pdfs(files: list[UploadFile] = File(...)):
                 detail=f"No text could be extracted from '{file.filename}'. It may be a scanned PDF."
             )
 
-        # Generate embeddings for all chunks
+        # Generate embeddings and store in vector store
         texts = [chunk.text for chunk in chunks]
         embeddings = embed_texts(texts)
-
-        # Store in vector store
         vector_store.add(chunks, embeddings)
+
+        # Also index in BM25 for keyword search
+        bm25_index.add(chunks)
 
         # Track file metadata
         page_numbers = set(c.page_number for c in chunks)
@@ -92,6 +105,55 @@ async def ingest_pdfs(files: list[UploadFile] = File(...)):
     )
 
 
+@app.post("/query", response_model=QueryResponse)
+async def query_documents(request: QueryRequest):
+    """Query the knowledge base with a natural language question.
+
+    Pipeline:
+    1. Detect intent (search / chitchat / refused)
+    2. If search: rewrite query → hybrid search → generate answer with citations
+    3. If chitchat: respond conversationally
+    4. If refused: polite refusal
+    """
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    # Step 1: Intent detection
+    intent = detect_intent(question)
+
+    # Step 2: Handle non-search intents
+    if intent == "chitchat":
+        return QueryResponse(
+            answer=get_chitchat_response(question),
+            citations=[],
+            intent=intent,
+        )
+
+    if intent == "refused":
+        return QueryResponse(
+            answer=get_refusal_response(question),
+            citations=[],
+            intent=intent,
+        )
+
+    # Step 3: Search intent — run the full RAG pipeline
+    rewritten = rewrite_query(question)
+
+    # Hybrid search (semantic + BM25 keyword)
+    results = hybrid_search(rewritten, vector_store, bm25_index, top_k=5)
+
+    # Generate answer with citations
+    answer, citations = generate_answer(question, results)
+
+    return QueryResponse(
+        answer=answer,
+        citations=citations,
+        intent=intent,
+        query_rewritten=rewritten,
+    )
+
+
 @app.get("/files", response_model=list[FileInfo])
 async def list_files():
     """List all ingested files with their metadata."""
@@ -105,6 +167,7 @@ async def delete_file(filename: str):
         raise HTTPException(status_code=404, detail=f"File '{filename}' not found.")
 
     vector_store.remove_file(filename)
+    bm25_index.remove_file(filename)
     del ingested_files[filename]
 
     # Remove from disk
