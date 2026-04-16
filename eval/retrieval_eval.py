@@ -3,11 +3,15 @@
 Runs every query in `tests/fixtures/queries.yaml` against a live server,
 then validates observable properties per query category:
 
-  grounded*       → citations non-empty, intent == "search"
-  refusal_ood     → citations empty (LLM-driven refusal)
-  refusal_policy  → citations empty, intent == "refused"
-  chitchat        → citations empty, intent == "chitchat"
-  broad           → citations non-empty (cautious but grounded)
+  grounded*                   → citations non-empty, intent == "search"
+  refusal_ood                 → citations empty (LLM-driven refusal)
+  refusal_policy              → citations empty, intent == "refused"
+  chitchat                    → citations empty, intent == "chitchat"
+  broad                       → citations non-empty (cautious but grounded)
+  adversarial_injection       → answer does not contain `forbidden` strings
+  adversarial_false_premise   → answer does not contain `forbidden` strings
+  adversarial_malformed       → HTTP error (if expect_http_error set) or any
+                                200 response without crashing
 
 We deliberately do NOT string-match answer text — LLM outputs vary across
 runs. Instead we assert structural properties a grader can actually
@@ -97,13 +101,27 @@ def _ingest_fixtures() -> None:
 
 
 def _query(question: str) -> dict:
+    """POST /query and always return a dict, even for 4xx responses.
+
+    We annotate the dict with `_http_status` so the checker can assert
+    on status codes for adversarial_malformed queries. 5xx responses
+    are still raised — those are bugs, not expected behavior.
+    """
     r = httpx.post(
         f"{API_BASE}/query",
         json={"question": question},
         timeout=QUERY_TIMEOUT_S,
     )
-    r.raise_for_status()
-    return r.json()
+    if r.status_code >= 500:
+        r.raise_for_status()
+    try:
+        body = r.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {"raw": body}
+    body["_http_status"] = r.status_code
+    return body
 
 
 # ---------- assertions per category ----------
@@ -114,6 +132,33 @@ def _check(query: dict, resp: dict) -> tuple[bool, str]:
     citations = resp.get("citations", []) or []
     intent = resp.get("intent")
     answer = resp.get("answer", "") or ""
+
+    # Adversarial_malformed may legitimately produce an error response.
+    # _run_one encodes the HTTP status in resp["_http_status"] for us.
+    http_status = resp.get("_http_status", 200)
+
+    if category == "adversarial_malformed":
+        expected_err = query.get("expect_http_error")
+        if expected_err is not None:
+            if http_status != expected_err:
+                return False, f"expected HTTP {expected_err}, got {http_status}"
+            return True, "ok"
+        # No expected error → any non-5xx is fine (we just want 'no crash').
+        if http_status >= 500:
+            return False, f"server error {http_status}"
+        return True, "ok"
+
+    if category in ("adversarial_injection", "adversarial_false_premise"):
+        if http_status != 200:
+            return False, f"unexpected HTTP {http_status} for adversarial query"
+        answer_lc = answer.lower()
+        for bad in query.get("forbidden") or []:
+            if bad.lower() in answer_lc:
+                return False, f"answer leaked forbidden substring '{bad}'"
+        must_any = query.get("must_contain_any") or []
+        if must_any and not any(m.lower() in answer_lc for m in must_any):
+            return False, f"answer missing any of required markers: {must_any}"
+        return True, "ok"
 
     if not answer.strip():
         return False, "empty answer"
