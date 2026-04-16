@@ -13,9 +13,15 @@ import re
 from app.models import Chunk, Citation
 from app.query import _call_mistral
 
-# Regex that tolerates case, whitespace, and parenthesis/bracket variants:
-#   [Source 3], [source 3], [ Source  3 ], (Source 3)
-CITATION_RE = re.compile(r"[\[\(]\s*source\s*(\d+)\s*[\]\)]", re.IGNORECASE)
+# Citation parsing is two-stage to tolerate the many shapes LLMs produce:
+#   [Source 3], [source 3], (Source 3)                     — simple
+#   [Source 3, p.31]                                       — with page reference
+#   [Source 1, Source 2, Source 3]                         — multiple per bracket
+#   [Source 2, p. 31]                                      — with spaces
+# We first find any bracket/paren group, then extract every "Source N" token
+# inside it. A naive single regex can't capture multiples per group.
+_CITATION_GROUP_RE = re.compile(r"[\[\(]([^\]\)]+)[\]\)]")
+_SOURCE_N_RE = re.compile(r"\bsources?\s+(\d+)", re.IGNORECASE)
 
 # Relevance threshold — applied to RRF scores (typical range: 0.005–0.035)
 # A chunk appearing in top-5 of both semantic + keyword lists scores ~0.03
@@ -151,12 +157,14 @@ def _extract_citations(
     cited_indices: list[int] = []
     seen: set[int] = set()
 
-    for match in CITATION_RE.finditer(answer):
-        n = int(match.group(1))
-        i = n - 1  # sources are 1-indexed in the prompt
-        if 0 <= i < len(chunks_with_scores) and i not in seen:
-            seen.add(i)
-            cited_indices.append(i)
+    for group_match in _CITATION_GROUP_RE.finditer(answer):
+        inner = group_match.group(1)
+        for num_match in _SOURCE_N_RE.finditer(inner):
+            n = int(num_match.group(1))
+            i = n - 1  # sources are 1-indexed in the prompt
+            if 0 <= i < len(chunks_with_scores) and i not in seen:
+                seen.add(i)
+                cited_indices.append(i)
 
     return [
         _make_citation(chunks_with_scores[i][0], chunks_with_scores[i][1])
