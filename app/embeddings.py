@@ -6,6 +6,7 @@ Cosine similarity for retrieval.
 """
 
 import os
+import time
 import numpy as np
 import httpx
 from app.models import Chunk
@@ -13,7 +14,9 @@ from app.models import Chunk
 MISTRAL_API_URL = "https://api.mistral.ai/v1/embeddings"
 EMBEDDING_MODEL = "mistral-embed"
 EMBEDDING_DIM = 1024
-BATCH_SIZE = 16  # Mistral supports batching — process 16 texts at a time
+BATCH_SIZE = 16            # Mistral supports batching — process 16 texts at a time
+MAX_RETRIES = 5            # retries on 429 / 5xx transient errors
+INTER_BATCH_SLEEP = 0.25   # gentle throttle: cap sustained rate at ~4 req/s
 
 
 def get_api_key() -> str:
@@ -23,17 +26,9 @@ def get_api_key() -> str:
     return key
 
 
-def embed_texts(texts: list[str]) -> np.ndarray:
-    """Generate embeddings for a list of texts via Mistral API.
-
-    Handles batching automatically to stay within API limits.
-    Returns an (N, 1024) numpy array of embeddings.
-    """
-    api_key = get_api_key()
-    all_embeddings = []
-
-    for i in range(0, len(texts), BATCH_SIZE):
-        batch = texts[i : i + BATCH_SIZE]
+def _embed_batch(batch: list[str], api_key: str) -> list[list[float]]:
+    """Embed a single batch with exponential-backoff retry on transient errors."""
+    for attempt in range(MAX_RETRIES):
         response = httpx.post(
             MISTRAL_API_URL,
             headers={
@@ -43,13 +38,45 @@ def embed_texts(texts: list[str]) -> np.ndarray:
             json={"model": EMBEDDING_MODEL, "input": batch},
             timeout=30.0,
         )
+        if response.status_code in (429, 500, 502, 503, 504):
+            if attempt < MAX_RETRIES - 1:
+                # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                delay = 2 ** attempt
+                # Honor Retry-After if the server provides it
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = max(delay, int(retry_after))
+                    except ValueError:
+                        pass
+                time.sleep(delay)
+                continue
         response.raise_for_status()
         data = response.json()
+        # Extract embedding vectors, sorted by index to preserve input order
+        return [item["embedding"] for item in sorted(data["data"], key=lambda x: x["index"])]
 
-        # Extract embedding vectors, sorted by index to preserve order
-        batch_embeddings = sorted(data["data"], key=lambda x: x["index"])
-        for item in batch_embeddings:
-            all_embeddings.append(item["embedding"])
+    raise RuntimeError(f"Mistral embeddings API exceeded {MAX_RETRIES} retries")
+
+
+def embed_texts(texts: list[str]) -> np.ndarray:
+    """Generate embeddings for a list of texts via Mistral API.
+
+    Handles batching and rate limits automatically.
+    Returns an (N, 1024) numpy array of embeddings.
+    """
+    api_key = get_api_key()
+    all_embeddings: list[list[float]] = []
+    n_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
+
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i : i + BATCH_SIZE]
+        batch_idx = i // BATCH_SIZE + 1
+        all_embeddings.extend(_embed_batch(batch, api_key))
+        # Gentle throttle between batches to stay under rate limits.
+        # Skip on the last batch so single-batch requests stay fast.
+        if batch_idx < n_batches:
+            time.sleep(INTER_BATCH_SLEEP)
 
     return np.array(all_embeddings, dtype=np.float32)
 
