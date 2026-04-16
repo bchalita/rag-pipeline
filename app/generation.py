@@ -8,8 +8,14 @@ Pipeline:
 5. Run hallucination filter to verify claims against evidence
 """
 
+import re
+
 from app.models import Chunk, Citation
 from app.query import _call_mistral
+
+# Regex that tolerates case, whitespace, and parenthesis/bracket variants:
+#   [Source 3], [source 3], [ Source  3 ], (Source 3)
+CITATION_RE = re.compile(r"[\[\(]\s*source\s*(\d+)\s*[\]\)]", re.IGNORECASE)
 
 # Relevance threshold — applied to RRF scores (typical range: 0.005–0.035)
 # A chunk appearing in top-5 of both semantic + keyword lists scores ~0.03
@@ -69,11 +75,14 @@ def _build_prompt(query: str, context: str, query_type: str) -> list[dict]:
 
     system_prompt = (
         "You are a document Q&A assistant. Answer the user's question using ONLY the "
-        "provided source documents. Follow these rules strictly:\n\n"
-        "1. CITE your sources using the format [Source N] after each claim.\n"
-        "2. If the sources don't contain enough information, say so explicitly.\n"
-        "3. Do NOT make up information that isn't in the sources.\n"
-        f"4. {format_instructions.get(query_type, format_instructions['explain'])}\n\n"
+        "provided source documents. Follow these rules STRICTLY:\n\n"
+        "1. EVERY factual statement must end with a [Source N] citation. No claim is "
+        "allowed without a citation. If you cannot cite a source for a claim, omit the claim.\n"
+        "2. Every paragraph or bullet must contain at least one [Source N] citation.\n"
+        "3. If the sources do not contain enough information to answer, say so explicitly "
+        "and stop. Do not fabricate an answer from general knowledge.\n"
+        "4. Do NOT restate information that isn't in the sources, even if you believe it is correct.\n"
+        f"5. {format_instructions.get(query_type, format_instructions['explain'])}\n\n"
         f"--- SOURCES ---\n{context}\n--- END SOURCES ---"
     )
 
@@ -83,28 +92,76 @@ def _build_prompt(query: str, context: str, query_type: str) -> list[dict]:
     ]
 
 
+def _make_citation(chunk: Chunk, score: float) -> Citation:
+    excerpt = chunk.text[:150] + "..." if len(chunk.text) > 150 else chunk.text
+    return Citation(
+        source_file=chunk.source_file,
+        page_number=chunk.page_number,
+        text_excerpt=excerpt,
+        relevance_score=round(score, 4),
+    )
+
+
+# Phrases that indicate the answer itself is a refusal / "no evidence" response.
+# Running a hallucination check on these is nonsensical — they have no claims.
+_REFUSAL_MARKERS = (
+    "do not contain",
+    "does not contain",
+    "don't contain",
+    "doesn't contain",
+    "do not provide enough",
+    "does not provide enough",
+    "do not provide information",
+    "does not provide information",
+    "not provide enough",
+    "no information about",
+    "no information on",
+    "insufficient evidence",
+    "not enough information",
+    "could not find",
+    "couldn't find",
+    "cannot provide",
+    "cannot answer",
+    "unable to provide",
+    "unable to answer",
+)
+
+
+def _is_refusal(answer: str) -> bool:
+    """Detect whether the answer itself is a 'no evidence' / refusal response."""
+    return any(marker in answer.lower() for marker in _REFUSAL_MARKERS)
+
+
 def _extract_citations(
     answer: str, chunks_with_scores: list[tuple[Chunk, float]]
 ) -> list[Citation]:
     """Extract citation objects from the generated answer.
 
-    Matches [Source N] references in the answer back to the original chunks.
+    Regex-matches multiple citation formats — tolerates case, whitespace,
+    and parenthesis vs bracket variants: [Source 3], (source 3), [ Source  3 ].
+    Only chunks the LLM actually referenced become citations.
+
+    If the answer is itself a refusal / "no evidence" response, we return an
+    empty citation list: the LLM may have still attached source markers per
+    the prompt rule, but citing nonexistent evidence for a refusal is misleading.
     """
-    citations = []
-    seen = set()
+    if _is_refusal(answer):
+        return []
 
-    for i, (chunk, score) in enumerate(chunks_with_scores):
-        ref = f"[Source {i+1}]"
-        if ref in answer and i not in seen:
+    cited_indices: list[int] = []
+    seen: set[int] = set()
+
+    for match in CITATION_RE.finditer(answer):
+        n = int(match.group(1))
+        i = n - 1  # sources are 1-indexed in the prompt
+        if 0 <= i < len(chunks_with_scores) and i not in seen:
             seen.add(i)
-            citations.append(Citation(
-                source_file=chunk.source_file,
-                page_number=chunk.page_number,
-                text_excerpt=chunk.text[:150] + "..." if len(chunk.text) > 150 else chunk.text,
-                relevance_score=round(score, 4),
-            ))
+            cited_indices.append(i)
 
-    return citations
+    return [
+        _make_citation(chunks_with_scores[i][0], chunks_with_scores[i][1])
+        for i in cited_indices
+    ]
 
 
 def check_hallucination(answer: str, context: str) -> str:
@@ -112,7 +169,13 @@ def check_hallucination(answer: str, context: str) -> str:
 
     Uses the LLM as a judge to identify unsupported claims.
     Returns the original answer if clean, or a flagged version if issues found.
+
+    Short-circuits for honest refusal answers (no evidence claim to verify).
     """
+    ans_lower = answer.lower()
+    if any(marker in ans_lower for marker in _REFUSAL_MARKERS):
+        return answer
+
     messages = [
         {
             "role": "system",
