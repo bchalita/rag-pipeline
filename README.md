@@ -128,6 +128,7 @@ Open [http://localhost:8000](http://localhost:8000) in your browser.
 ### Run Tests
 
 ```bash
+# Unit tests
 # Offline tests (no API key needed)
 python -m tests.test_ingestion
 python -m tests.test_search
@@ -136,7 +137,14 @@ python -m tests.test_search
 python -m tests.test_query
 python -m tests.test_generation
 python -m tests.test_api
+
+# End-to-end retrieval eval (23 queries, requires running server + API key)
+# See EVALUATION.md for full methodology and findings.
+python -m eval.retrieval_eval
 ```
+
+See [`EVALUATION.md`](EVALUATION.md) for the full evaluation methodology,
+latest scorecard, bugs surfaced during testing, and known limitations.
 
 ---
 
