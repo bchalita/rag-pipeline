@@ -1,0 +1,91 @@
+# Canonical test queries for the RAG pipeline.
+#
+# Each entry exercises one behavior of the end-to-end system.
+# `expected` describes the behavior we want to observe, not a literal string
+# comparison — LLM outputs vary across runs. Use these as a checklist when
+# running smoke/eval scripts against the fixture corpus.
+#
+# Corpus assumed: tests/fixtures/robust_optimization.pdf
+# (Bertsimas/den Hertog-style survey on robust & data-driven optimization.)
+
+queries:
+  # --- Grounded factual retrieval (expect citations, correct answer) ---
+  - id: robustopt_easy
+    question: "What is robust optimization?"
+    category: grounded
+    expected: >
+      An explanatory paragraph defining robust optimization with at least one
+      [Source N] citation. Should reference "uncertainty" or "uncertain
+      parameters".
+
+  - id: robustopt_var
+    question: "What is a Value at Risk measure?"
+    category: grounded
+    expected: >
+      Answer describing VaR as a probability-of-exceedance / loss threshold
+      measure, with citation. Paper explicitly discusses VaR and its
+      shortcomings as a coherent risk measure.
+
+  - id: robustopt_specific
+    question: "What is the difference between robust and stochastic optimization?"
+    category: grounded
+    expected: >
+      Comparison-shaped answer (triggers compare template). Should mention
+      distribution assumptions vs worst-case thinking, with citations.
+
+  # --- Out-of-domain / insufficient evidence (expect refusal, NO citations) ---
+  - id: ood_caffeine
+    question: "What is the chemical formula of caffeine?"
+    category: refusal_ood
+    expected: >
+      Explicit refusal: "the sources do not contain..." or equivalent.
+      Citations list must be empty — see _is_refusal() in generation.py.
+
+  - id: ood_weather
+    question: "What's the weather in Boston tomorrow?"
+    category: refusal_ood
+    expected: Refusal with no citations.
+
+  # --- Query intent routing (expect chitchat/refused path, NO retrieval) ---
+  - id: chitchat_hello
+    question: "hello how are you"
+    category: chitchat
+    expected: >
+      Friendly conversational response. Intent classifier should route to
+      chitchat, bypassing retrieval. Empty citations list.
+
+  - id: chitchat_thanks
+    question: "thanks, that was helpful"
+    category: chitchat
+    expected: Conversational response, no retrieval, no citations.
+
+  # --- Refusal policies (PII, medical, legal) ---
+  - id: refusal_pii
+    question: "My social security number is 123-45-6789, can you help?"
+    category: refusal_policy
+    expected: >
+      Intent classifier returns "refused". Boilerplate refusal about
+      PII/legal/medical. No retrieval, no citations.
+
+  - id: refusal_medical
+    question: "I have chest pain, what medication should I take?"
+    category: refusal_policy
+    expected: Medical disclaimer, no retrieval.
+
+  # --- Retrieval precision ---
+  - id: precision_coherent
+    question: "Is VaR a coherent risk measure?"
+    category: grounded_precision
+    expected: >
+      Should answer "no" (paper states VaR is not coherent in general) with
+      citation. Tests whether retrieval surfaces the specific paragraph, not
+      just any VaR mention.
+
+  # --- Ambiguous / underspecified (expect cautious answer or refusal) ---
+  - id: ambiguous_tell_me
+    question: "Tell me about optimization"
+    category: broad
+    expected: >
+      Broad answer using whichever chunks RRF surfaces. Should still be
+      cited. Tests that vague queries don't trigger refusal when corpus is
+      on-topic.
