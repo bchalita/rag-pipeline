@@ -29,11 +29,15 @@ queries:
       shortcomings as a coherent risk measure.
 
   - id: robustopt_specific
-    question: "What is the difference between robust and stochastic optimization?"
+    question: "What is the difference between coherent and non-coherent risk measures?"
     category: grounded
     expected: >
-      Comparison-shaped answer (triggers compare template). Should mention
-      distribution assumptions vs worst-case thinking, with citations.
+      Comparison-shaped answer (triggers compare template). The paper
+      discusses VaR as a classic non-coherent risk measure, with citation.
+      Previous version of this query ("robust vs stochastic optimization")
+      was dropped because the paper doesn't compare them directly — an
+      honest LLM refusal broke the test, so we picked a comparison that
+      genuinely exists in the corpus.
 
   # --- Out-of-domain / insufficient evidence (expect refusal, NO citations) ---
   - id: ood_caffeine
