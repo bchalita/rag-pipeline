@@ -5,8 +5,10 @@
 # comparison — LLM outputs vary across runs. Use these as a checklist when
 # running smoke/eval scripts against the fixture corpus.
 #
-# Corpus assumed: tests/fixtures/robust_optimization.pdf
-# (Bertsimas/den Hertog-style survey on robust & data-driven optimization.)
+# Corpus assumed: all PDFs in tests/fixtures/
+#   - robust_optimization.pdf: academic survey, clean prose (retrieval precision)
+#   - salesforce_10k.pdf: SEC filing with tables, multi-column, footnotes
+#     (stress-tests ingestion + tolerance of imperfect chunk boundaries)
 
 queries:
   # --- Grounded factual retrieval (expect citations, correct answer) ---
@@ -89,3 +91,37 @@ queries:
       Broad answer using whichever chunks RRF surfaces. Should still be
       cited. Tests that vague queries don't trigger refusal when corpus is
       on-topic.
+
+  # --- Odd-format corpus (SFDC 10-K: tables, multi-column, footnotes) ---
+  - id: sfdc_easy
+    question: "What does Salesforce do?"
+    category: grounded
+    expected: >
+      Overview of Salesforce as a CRM / AI platform company, citing early
+      pages of the 10-K (Item 1 Business). Tests retrieval on prose
+      sections of a filing.
+
+  - id: sfdc_revenue
+    question: "What was Salesforce's total revenue for fiscal 2026?"
+    category: grounded_table
+    expected: >
+      Specific dollar amount ($41,525M) with citation to an income
+      statement page. IMPORTANT: this exercises the chunker on table
+      content. The LLM may need to assemble context from mangled table
+      fragments — a soft failure here (correct number but weak citation)
+      is acceptable and documented in EVALUATION.md.
+
+  - id: sfdc_ceo
+    question: "Who is the CEO of Salesforce?"
+    category: grounded
+    expected: >
+      Marc Benioff, with citation. Tests retrieval of named-entity facts
+      from a cover / signatures / officers section.
+
+  - id: sfdc_ood
+    question: "What is Salesforce's plan to acquire OpenAI?"
+    category: refusal_ood
+    expected: >
+      Refusal — no such plan is discussed in the filing. Tests that
+      plausible-sounding corporate questions don't hallucinate when
+      unsupported. Citations should be empty.
