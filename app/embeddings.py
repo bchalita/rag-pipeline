@@ -14,7 +14,7 @@ from app.models import Chunk
 MISTRAL_API_URL = "https://api.mistral.ai/v1/embeddings"
 EMBEDDING_MODEL = "mistral-embed"
 EMBEDDING_DIM = 1024
-BATCH_SIZE = 16            # Mistral supports batching — process 16 texts at a time
+BATCH_SIZE = 16            # Mistral API batch limit; balances throughput vs. rate-limit risk
 MAX_RETRIES = 5            # retries on 429 / 5xx transient errors
 INTER_BATCH_SLEEP = 0.25   # gentle throttle: cap sustained rate at ~4 req/s
 
@@ -53,7 +53,7 @@ def _embed_batch(batch: list[str], api_key: str) -> list[list[float]]:
                 continue
         response.raise_for_status()
         data = response.json()
-        # Extract embedding vectors, sorted by index to preserve input order
+        # Sort by API response index — defensive against potential reordering
         return [item["embedding"] for item in sorted(data["data"], key=lambda x: x["index"])]
 
     raise RuntimeError(f"Mistral embeddings API exceeded {MAX_RETRIES} retries")

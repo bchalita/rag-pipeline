@@ -62,11 +62,24 @@ def _detect_query_type(query: str) -> str:
         return "explain"
 
 
-def _build_prompt(query: str, context: str, query_type: str) -> list[dict]:
+_CITATION_STRIP_RE = re.compile(r"\[Source[^\]]*\]", re.IGNORECASE)
+
+
+def _build_prompt(
+    query: str,
+    context: str,
+    query_type: str,
+    history: list[dict] | None = None,
+) -> list[dict]:
     """Build the prompt messages for the LLM based on query type.
 
     Answer shaping: different system prompts for different query types
     to produce appropriately structured outputs.
+
+    When conversation history is provided, prior turns are inserted between
+    the system prompt and the current user message so the LLM can resolve
+    follow-up references. We strip [Source N] markers from prior assistant
+    messages to keep the context clean.
     """
     format_instructions = {
         "explain": "Provide a clear, concise explanation based on the sources.",
@@ -79,6 +92,14 @@ def _build_prompt(query: str, context: str, query_type: str) -> list[dict]:
         ),
     }
 
+    followup_note = ""
+    if history:
+        followup_note = (
+            "\n\nIMPORTANT: You are continuing a conversation. Even for follow-up "
+            "questions, you MUST cite [Source N] for every claim using the sources "
+            "provided above. Do not rely on or repeat previous answers without citing."
+        )
+
     system_prompt = (
         "You are a document Q&A assistant. Answer the user's question using ONLY the "
         "provided source documents. Follow these rules STRICTLY:\n\n"
@@ -88,14 +109,27 @@ def _build_prompt(query: str, context: str, query_type: str) -> list[dict]:
         "3. If the sources do not contain enough information to answer, say so explicitly "
         "and stop. Do not fabricate an answer from general knowledge.\n"
         "4. Do NOT restate information that isn't in the sources, even if you believe it is correct.\n"
-        f"5. {format_instructions.get(query_type, format_instructions['explain'])}\n\n"
+        f"5. {format_instructions.get(query_type, format_instructions['explain'])}"
+        f"{followup_note}\n\n"
         f"--- SOURCES ---\n{context}\n--- END SOURCES ---"
     )
 
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query},
-    ]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+
+    # Insert conversation history (last 3 exchanges, 6 messages max).
+    if history:
+        for turn in history[-6:]:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if role == "assistant":
+                # Strip citation markers from prior answers — they reference
+                # a different set of source numbers and would confuse the LLM.
+                content = _CITATION_STRIP_RE.sub("", content).strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": query})
+    return messages
 
 
 def _make_citation(chunk: Chunk, score: float) -> Citation:
@@ -213,11 +247,14 @@ def check_hallucination(answer: str, context: str) -> str:
 def generate_answer(
     query: str,
     chunks_with_scores: list[tuple[Chunk, float]],
+    history: list[dict] | None = None,
 ) -> tuple[str, list[Citation]]:
     """Full generation pipeline: prompt → LLM → citations → hallucination check.
 
     Returns (answer_text, list_of_citations).
     If chunks don't meet the similarity threshold, returns an "insufficient evidence" message.
+    Citation relevance scores are normalized so the top result is 1.0 (100%) —
+    raw RRF scores are tiny (~0.016) which looks misleading as a percentage.
     """
     # Check if we have sufficient evidence
     if not chunks_with_scores:
@@ -236,11 +273,21 @@ def generate_answer(
     query_type = _detect_query_type(query)
 
     # Generate answer
-    messages = _build_prompt(query, context, query_type)
+    messages = _build_prompt(query, context, query_type, history=history)
     answer = _call_mistral(messages, temperature=0.1)
 
     # Extract citations
     citations = _extract_citations(answer, chunks_with_scores)
+
+    # Normalize relevance scores so the top citation is 1.0 (100%).
+    # Raw RRF scores are tiny (0.005–0.033) which looks like low confidence
+    # to anyone expecting a percentage — normalizing makes the ranking
+    # intuitive without changing the actual ordering.
+    if citations:
+        max_score = max(c.relevance_score for c in citations)
+        if max_score > 0:
+            for c in citations:
+                c.relevance_score = round(c.relevance_score / max_score, 4)
 
     # Hallucination filter
     answer = check_hallucination(answer, context)

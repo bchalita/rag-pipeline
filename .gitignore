@@ -8,3 +8,9 @@ uploads/*
 dist/
 build/
 .DS_Store
+
+# Personal / session notes (not part of the deliverable)
+CHALLENGE.md
+EXPLAINABILITY.md
+current_state.md
+tests/test_sample.pdf

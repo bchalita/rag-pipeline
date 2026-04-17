@@ -14,6 +14,7 @@ class Chunk(BaseModel):
 class QueryRequest(BaseModel):
     """User query to the RAG system."""
     question: str
+    history: list[dict] | None = None  # [{role: "user"|"assistant", content: "..."}]
 
 
 class Citation(BaseModel):

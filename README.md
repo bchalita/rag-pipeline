@@ -154,6 +154,8 @@ latest scorecard, bugs surfaced during testing, and known limitations.
 |--------|------|-------------|
 | `POST` | `/ingest` | Upload one or more PDF files for ingestion |
 | `POST` | `/query` | Query the knowledge base with a question |
+| `POST` | `/load_samples` | Ingest the fixture corpus shipped with the repo |
+| `GET` | `/suggest_queries` | LLM-generated example questions for the current corpus |
 | `GET` | `/files` | List all ingested files |
 | `DELETE` | `/files/{filename}` | Remove a file from the knowledge base |
 | `GET` | `/` | Serve the chat UI |
@@ -171,6 +173,20 @@ curl -X POST http://localhost:8000/ingest \
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What are the key findings?"}'
+```
+
+### Example: Follow-up query (with conversation history)
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "How does that break down by region?",
+    "history": [
+      {"role": "user", "content": "What is total revenue?"},
+      {"role": "assistant", "content": "Total revenue was $41,525 million."}
+    ]
+  }'
 ```
 
 ---
