@@ -6,6 +6,34 @@ Built with **FastAPI**, **Mistral AI**, and **zero external RAG/search libraries
 
 ---
 
+## Results
+
+Evaluated with a behavioral harness of **23 queries across 9 categories**
+(grounded retrieval, out-of-domain refusal, chitchat, adversarial prompt
+injection, malformed input, etc.). **23/23 pass.**
+
+The harness deliberately does **not** string-match answer text. Instead it checks
+*observable, gameable-resistant* properties: correct intent routing (search vs.
+refuse vs. chitchat), citation count on grounded answers, and substring
+presence/absence for injection and refusal cases. The goal is to catch the
+failures that actually matter in a RAG system — hallucinated answers, leaked
+prompts, and answering questions it should refuse — rather than to reward
+surface-level text overlap.
+
+| Behavior | Result |
+|---|---|
+| Grounded queries return cited answers | pass |
+| Out-of-domain questions refused | pass |
+| Adversarial prompt-injection resisted | pass |
+| Malformed requests rejected (HTTP 400) | pass |
+
+**Latency (observed):** chitchat / refusals 0.4–1.5s · OOD refusal ~2s · grounded retrieval 2.5–6s.
+**Corpus:** 2 documents → ~1,758 chunks, ~2 min ingestion, ~$0.02 in embeddings.
+
+See [`EVALUATION.md`](EVALUATION.md) for the full methodology and per-query scorecard.
+
+---
+
 ## System Design
 
 ```
